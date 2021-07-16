@@ -27,8 +27,23 @@ spec:
       labels:
         app: {{ template "name" . }}
         release: {{ .Release.Name }}
-      {{- if .Values.podAnnotations }}
       annotations:
+        kube-plex/container-name: "kube-plex-init"
+        kube-plex/pms-addr: {{ template "fullname" . }}:{{ .Values.service.port }}
+        kube-plex/pms-container-name: "plex"
+        {{- if .Values.kubePlex.loglevel }}
+        kube-plex/loglevel: "{{ .Values.kubePlex.loglevel }}"
+        {{- end }}
+        {{- if .Values.kubePlex.resources.requests }}
+        kube-plex/resources-requests: {{ toJson .Values.kubePlex.resources.requests | quote }}
+        {{- end}}
+        {{- if .Values.kubePlex.resources.limits }}
+        kube-plex/resources-limits: {{ toJson .Values.kubePlex.resources.limits | quote }}
+        {{- end}}
+        {{- if .Values.kubePlex.mounts }}
+        kube-plex/mounts: {{ .Values.kubePlex.mounts }}
+        {{- end}}
+      {{- if .Values.podAnnotations }}
         {{- range $key, $value := .Values.podAnnotations }}
         {{ $key }}: {{ $value | quote }}
         {{- end }}
@@ -38,7 +53,7 @@ spec:
       hostname: "{{ template "fullname" . }}"
 {{- if .Values.kubePlex.enabled }}
       initContainers:
-      - name: kube-plex-install
+      - name: kube-plex-init
         image: "{{ .Values.kubePlex.image.repository }}:{{ .Values.kubePlex.image.tag }}"
         imagePullPolicy: {{ .Values.kubePlex.image.pullPolicy }}
         command:
@@ -65,26 +80,30 @@ spec:
               - |
                 #!/bin/bash
                 set -e
-                rm -f '/usr/lib/plexmediaserver/Plex Transcoder'
+                mv '/usr/lib/plexmediaserver/Plex Transcoder' '/usr/lib/plexmediaserver/Plex Transcoder.orig' 
                 cp /shared/kube-plex '/usr/lib/plexmediaserver/Plex Transcoder'
 {{- end }}
-        readinessProbe:
-          httpGet:
-            path: /identity
-            port: 32400
-          initialDelaySeconds: 15
-          timeoutSeconds: 5
-        livenessProbe:
-          httpGet:
-            path: /identity
-            port: 32400
-          initialDelaySeconds: 10
-          timeoutSeconds: 10
+{{- range $probeName, $probe := .Values.probes }}
+  {{- if $probe.enabled -}}
+    {{- "" | nindent 8 }}
+    {{- $probeName }}Probe:
+    {{- if $probe.custom -}}
+      {{- $probe.spec | toYaml | nindent 10 }}
+    {{- else }}
+      {{- "tcpSocket:" | nindent 10 }}
+        {{- printf "port: %v" $.Values.service.port  | nindent 12 }}
+      {{- printf "initialDelaySeconds: %v" $probe.spec.initialDelaySeconds  | nindent 10 }}
+      {{- printf "failureThreshold: %v" $probe.spec.failureThreshold  | nindent 10 }}
+      {{- printf "timeoutSeconds: %v" $probe.spec.timeoutSeconds  | nindent 10 }}
+      {{- printf "periodSeconds: %v" $probe.spec.periodSeconds | nindent 10 }}
+    {{- end }}
+  {{- end }}
+{{- end }}
         ports:
           - name: pms
-            containerPort: 32400
+            containerPort: {{ .Values.service.port }}
           - name: http
-            containerPort: 32400
+            containerPort: {{ .Values.service.port }}
           - name: https
             containerPort: 32443
         env:
@@ -94,32 +113,14 @@ spec:
         - name: PLEX_CLAIM
           value: "{{ .Values.claimToken }}"
         # kube-plex env vars
-        - name: PMS_INTERNAL_ADDRESS
-          value: http://{{ template "fullname" . }}:32400
-        - name: PMS_IMAGE
-          value: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-        - name: KUBE_NAMESPACE
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        - name: TRANSCODE_PVC
-{{- if .Values.persistence.transcode.claimName }}
-          value: "{{ .Values.persistence.transcode.claimName }}"
-{{- else }}
-          value: "{{ template "fullname" . }}-transcode"
-{{- end }}
-        - name: DATA_PVC
-{{- if .Values.persistence.data.claimName }}
-          value: "{{ .Values.persistence.data.claimName }}"
-{{- else }}
-          value: "{{ template "fullname" . }}-data"
-{{- end }}
-        - name: CONFIG_PVC
-{{- if .Values.persistence.config.claimName }}
-          value: "{{ .Values.persistence.config.claimName }}"
-{{- else }}
-          value: "{{ template "fullname" . }}-config"
-{{- end }}
 {{- if .Values.proxy.enable }}
   {{- if .Values.proxy.http }}
         - name: "HTTP_PROXY"
